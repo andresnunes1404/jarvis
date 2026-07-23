@@ -666,16 +666,24 @@ class StartProjectDevelopmentTool(Tool):
                 reply_text="Não encontrei nenhum plano guardado. Queres começar um novo intake de projeto?",
             )
 
+        # `text` is whatever free-form string the chat model decided to pass
+        # as "input" — often the user's entire utterance, not a clean
+        # project name (see project_intake.spec.md "Starting development").
+        # `_extract_named_target`'s regex can pull a plausible-looking but
+        # bogus "name" out of a sentence that never actually names a
+        # project (e.g. "...do projeto e delega isto ao antigravity" ->
+        # "e delega isto ao antigravity"). Treating that as a real
+        # specific-name search would incorrectly report "no plan found"
+        # even when a sole active plan exists. So a "named" candidate only
+        # narrows the match set when it actually matches a real note;
+        # otherwise this falls through to the same resolution as "no name
+        # given at all" (sole active note wins; several -> ask which one).
+        matches = paths
         named = _extract_named_target(text)
         if named:
-            matches = [p for p in paths if named in p.lower()]
-            if not matches:
-                return ToolExecutionResult(
-                    success=True,
-                    reply_text=f"Não encontrei nenhum plano chamado '{named}'. Podes confirmar o nome?",
-                )
-        else:
-            matches = paths
+            name_matches = [p for p in paths if named in p.lower()]
+            if name_matches:
+                matches = name_matches
 
         if len(matches) > 1:
             options = ", ".join(_note_display_name(p) for p in matches)

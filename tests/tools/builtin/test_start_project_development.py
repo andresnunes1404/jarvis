@@ -68,6 +68,46 @@ class TestStartProjectDevelopment:
 
         assert result.success is True
 
+    def test_long_freetext_query_with_sole_active_plan_still_resolves(self, mock_config):
+        """Regression test: the chat model often passes the user's entire
+        utterance as "input", not a clean project name. A sentence like
+        this one contains the word "projeto" without actually naming a
+        specific project — _extract_named_target pulls "e delega isto ao
+        antigravity" out of it, which must NOT be treated as a real
+        specific-name search when it matches no real note. With exactly
+        one active plan note, the tool must resolve to it directly rather
+        than reporting "no plan found"."""
+        tool = StartProjectDevelopmentTool()
+        note_content = "---\nstatus: active\ntype: plan\n---\n## Status\nPlano criado."
+        responses = [
+            (False, "Projects/website/website - 2026-07-01.md"),
+            (False, note_content),
+            (False, "dispatched"),
+            (False, "patched"),
+        ]
+        long_freetext = "avança com o desenvolvimento do projeto e delega isto ao antigravity"
+        with patch.object(pi, "MCPClient", return_value=_mock_client(responses)):
+            result = tool.run({"input": long_freetext}, _make_context(mock_config))
+
+        assert result.success is True
+        assert "não encontrei" not in result.reply_text.lower()
+        assert "enviado para" in result.reply_text.lower()
+
+    def test_long_freetext_query_with_two_active_plans_asks_which_one(self, mock_config):
+        """Same free-text query as above, but with two active plan notes:
+        must ask which one instead of guessing or reporting zero results."""
+        tool = StartProjectDevelopmentTool()
+        responses = [
+            (False, "Projects/a/a.md\nProjects/b/b.md"),
+        ]
+        long_freetext = "avança com o desenvolvimento do projeto e delega isto ao antigravity"
+        with patch.object(pi, "MCPClient", return_value=_mock_client(responses)):
+            result = tool.run({"input": long_freetext}, _make_context(mock_config))
+
+        assert result.success is True
+        assert "qual" in result.reply_text.lower()
+        assert "não encontrei" not in result.reply_text.lower()
+
     def test_asks_user_when_several_match(self, mock_config):
         tool = StartProjectDevelopmentTool()
         responses = [

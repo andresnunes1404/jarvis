@@ -336,6 +336,23 @@ projeto X", "manda isto para os agentes".
    note exists, use that; if several match, ask the user which one
    (single question, per the "close the loop" rule) instead of
    guessing.
+
+   **`input` is often a full sentence, not a clean project name.**
+   Whatever the chat model decides to relay as `input` may be the user's
+   entire utterance (e.g. "let's proceed with the build the site,
+   delegate to Antigravity") rather than a name — the tool has no
+   control over what the model passes. `_extract_named_target`'s regex
+   (matching text after the word "projeto") can pull a plausible-looking
+   but bogus "name" out of a sentence that never actually names a
+   project — e.g. "avança com o desenvolvimento do projeto e delega isto
+   ao antigravity" yields `"e delega isto ao antigravity"`. Treating that
+   as a genuine specific-name search would incorrectly report "no plan
+   found" even when a single active plan exists (this was an observed
+   voice-testing failure). So a `named` candidate only narrows the match
+   set when it actually matches a real note's path/slug — if it matches
+   nothing, resolution falls through to the same behaviour as "no name
+   given at all" (sole active note wins; several → ask which one),
+   rather than surfacing a failed name search.
 2. Read the resolved note's full content via the Obsidian MCP.
 3. Send that content as the opening task to Antigravity via MCP, with
    an instruction wrapper making clear this is a production plan to be
@@ -354,6 +371,23 @@ gated, deterministic), planning is the human's review pass in
 Obsidian, and delegation to Antigravity is a distinct, explicit action
 that only fires when asked — never automatically the moment intake
 finishes.
+
+**Why correct resolution here matters beyond this tool.** When
+`StartProjectDevelopmentTool` incorrectly reports "no plan found" (the
+resolution bug above), the small chat model has been observed reaching
+for generic `obsidian__vault_read`/`obsidian__search_query` calls with
+guessed or mis-heard paths, and on at least one occasion fabricating an
+entire note's contents that never existed in the vault rather than
+saying it doesn't know. That fallback cascade is the same small-model
+failure mode already guarded against elsewhere in this codebase
+(confirm only after a real tool result — see `web_search.spec.md`'s
+"honest failure over confabulation" and this file's own
+honest-failure-on-Obsidian-write-failure rule), not something fixable
+generically. The one thing actually preventable here is *triggering* it
+in the first place: a correct resolution (this section) means
+`startProjectDevelopment` succeeds instead of coming back empty-handed,
+so the model never has a reason to reach past it for the raw Obsidian
+tools.
 
 ### Restarting mid-interview
 
@@ -479,3 +513,8 @@ abandon turn   → "Ok, cancelei o intake do projeto. Diz 'vamos começar um nov
   session exists); and that a start-trigger phrase while a session is
   already active is handled entirely by the main gate (restart-trigger
   reply), never by this second check.
+- Start-development resolution tests: a long free-text `input` (a full
+  sentence containing "projeto" without naming anything) with exactly
+  one active plan note resolves to it directly rather than reporting "no
+  plan found"; the same free-text input with two active plan notes asks
+  which one instead of guessing or reporting zero results.
