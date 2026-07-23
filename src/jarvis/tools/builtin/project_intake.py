@@ -100,6 +100,40 @@ _GENERIC_RETRY_MARKERS = [
     "try it again",
 ]
 
+# Substrings recognising a request to start a new intake session,
+# deterministically — see "Trigger detection" in project_intake.spec.md.
+# The chat model choosing to invoke projectIntake based on its
+# description is not reliable enough on its own (observed in voice
+# testing: the small model sometimes talks about starting a project
+# instead of actually calling the tool), so this is a second, code-level
+# safety net that forces the call regardless of the model's choice.
+# Reasonably specific multi-word phrases only — no bare "projeto"/
+# "project" — so an unrelated conversational mention of a project never
+# fires this.
+_START_TRIGGER_PHRASES = [
+    "vamos comecar um novo projeto",
+    "vamos comecar um projeto",
+    "comecar um novo projeto",
+    "comecar um projeto novo",
+    "quero comecar um novo projeto",
+    "let's start a new project",
+    "lets start a new project",
+    "start a new project",
+    "begin a new project",
+    "starting a new project",
+]
+
+# Bare "novo projeto" / "outro projeto" are only a trigger when they make
+# up essentially the whole utterance (e.g. a minimal voice command like
+# "Novo projeto."). As a substring inside a longer message they are too
+# likely to be an unrelated mention of someone else's project (e.g. "o
+# novo projeto da câmara municipal..."), so — unlike the phrases above —
+# they are checked by exact match, not containment. This is the
+# equivalent of _is_retry_save_phrase's "generic marker only counts
+# combined with something specific" guard, applied here as "combined
+# with being the entire message" instead of a second keyword.
+_BARE_START_PHRASES = {"novo projeto", "outro projeto"}
+
 _FALLBACK_TEMPLATES: Dict[str, Any] = {
     "other": {
         "label": "Outro / Genérico",
@@ -138,6 +172,20 @@ def _is_retry_save_phrase(normalized_text: str) -> bool:
     if "obsidian" in normalized_text:
         return any(marker in normalized_text for marker in _GENERIC_RETRY_MARKERS)
     return False
+
+
+def _is_start_trigger_phrase(normalized_text: str) -> bool:
+    if any(phrase in normalized_text for phrase in _START_TRIGGER_PHRASES):
+        return True
+    return normalized_text.rstrip(".!? ") in _BARE_START_PHRASES
+
+
+def is_start_trigger_phrase(text: str) -> bool:
+    """Public entry point for the pre-planner gate: does ``text``
+    deterministically request starting a new intake session? See
+    project_intake.spec.md "Trigger detection".
+    """
+    return _is_start_trigger_phrase(_normalize(text))
 
 
 def load_templates(cfg: Any) -> Dict[str, Any]:

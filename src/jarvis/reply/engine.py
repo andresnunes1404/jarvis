@@ -840,10 +840,13 @@ def run_reply_engine(db: "Database", cfg, tts: Optional[Any],
     # Fail-open: any DB error is treated as "no session" by
     # get_gated_session. See project_intake.spec.md "The gate".
     if getattr(cfg, "project_intake_enabled", True):
-        from ..tools.builtin.project_intake import get_gated_session, maybe_retry_obsidian_save
-        _intake_session = get_gated_session(db, cfg)
-        if _intake_session is not None:
-            debug_log("project intake gate: active session, forcing projectIntake tool call", "tools")
+        from ..tools.builtin.project_intake import (
+            get_gated_session,
+            is_start_trigger_phrase,
+            maybe_retry_obsidian_save,
+        )
+
+        def _force_project_intake_call() -> str:
             _intake_result = run_tool_with_retries(
                 db=db,
                 cfg=cfg,
@@ -857,6 +860,11 @@ def run_reply_engine(db: "Database", cfg, tts: Optional[Any],
             )
             return _deliver_intake_reply(_intake_result.reply_text)
 
+        _intake_session = get_gated_session(db, cfg)
+        if _intake_session is not None:
+            debug_log("project intake gate: active session, forcing projectIntake tool call", "tools")
+            return _force_project_intake_call()
+
         # No active session — check for a deterministic "save the plan
         # again" retry against the most recent completed-but-unsaved
         # session, so this never falls through to free-form LLM routing
@@ -866,6 +874,17 @@ def run_reply_engine(db: "Database", cfg, tts: Optional[Any],
         if _retry_reply is not None:
             debug_log("project intake gate: retry-save phrase matched, re-attempting Obsidian write", "tools")
             return _deliver_intake_reply(_retry_reply)
+
+        # Still no active session, and no retry match — check for a
+        # deterministic "start a new project" trigger phrase so this
+        # never depends on the chat model reliably choosing to invoke
+        # projectIntake. Observed in voice testing: the small model
+        # sometimes talks about starting a project instead of actually
+        # calling the tool. See project_intake.spec.md "Trigger
+        # detection".
+        if is_start_trigger_phrase(redacted):
+            debug_log("project intake gate: start-trigger phrase matched, forcing projectIntake tool call", "tools")
+            return _force_project_intake_call()
 
     # Step 2: Check for recent dialogue context
     recent_messages = []

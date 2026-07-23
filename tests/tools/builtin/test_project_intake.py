@@ -432,3 +432,53 @@ class TestObsidianRetry:
                 tool.run({"input": f"resposta {i}"}, _make_context(db, mock_config))
 
         assert pi.maybe_retry_obsidian_save(db, mock_config, "grava o plano outra vez") is None
+
+
+class TestStartTriggerPhrase:
+    """Deterministic recognition of a 'start a new project' request, so
+    starting a session no longer depends on the chat model reliably
+    choosing to invoke projectIntake. See project_intake.spec.md "Trigger
+    detection"."""
+
+    @pytest.mark.parametrize("text", [
+        "vamos começar um novo projeto",
+        "quero começar um novo projeto",
+        "começar um novo projeto",
+        "novo projeto",
+        "Novo projeto.",
+        "outro projeto",
+        "let's start a new project",
+        "start a new project",
+        "begin a new project",
+        "Starting a new project would be great.",
+    ])
+    def test_recognised_phrasings_trigger(self, text):
+        assert pi.is_start_trigger_phrase(text) is True
+
+    @pytest.mark.parametrize("text", [
+        "estou super entusiasmado com o novo projeto que a equipa vai lançar",
+        "o novo projeto da câmara municipal vai custar milhões",
+        "I've been reading about a new project management technique someone shared.",
+        "estou envolvido num projeto novo com uns amigos",
+        "que horas são?",
+        "",
+    ])
+    def test_unrelated_mentions_of_project_do_not_trigger(self, text):
+        assert pi.is_start_trigger_phrase(text) is False
+
+
+class TestStartTriggerGate:
+    """Engine-level behaviour lives in test_engine_project_intake_gate.py;
+    these cover the tool-level guarantee that forcing projectIntake with no
+    active session creates one, regardless of phrasing."""
+
+    def test_forcing_tool_with_no_session_creates_one(self, db, mock_config):
+        tool = ProjectIntakeTool()
+        assert get_gated_session(db) is None
+
+        result = tool.run(
+            {"input": "vamos começar um novo projeto"}, _make_context(db, mock_config)
+        )
+        assert result.success is True
+        assert "tipo de projeto" in result.reply_text.lower()
+        assert get_gated_session(db) is not None

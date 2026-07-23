@@ -68,6 +68,7 @@ Every distinct LLM call in Jarvis, what feeds it, what consumes it, and how it i
 - **Rationale**: multi-turn interview state must survive turns deterministically; a fresh planner/router call every turn has no guarantee of recognising "mid-interview" the way a small local model might miss it. See `project_intake.spec.md` "Why a gate, not just a tool".
 - **Data-flow edge**: this is also the first builtin tool invocation in the app that calls out to an MCP server (Obsidian "Jarvis Brain") directly from tool code rather than via the LLM's own tool-call loop — see `ProjectIntakeTool.run()` → `write_brief_to_obsidian()` on interview completion, and the separate `StartProjectDevelopmentTool` for the later Antigravity hand-off trigger.
 - **Retry sub-gate**: when no active session exists, `maybe_retry_obsidian_save()` runs immediately after — same file, same wiring point, still NO LLM (deterministic phrase match + `Database.get_last_unsaved_completed_session()`). If the user's text matches a "save the plan again" phrase and a `status='completed', obsidian_saved=0` row exists, it re-runs `write_brief_to_obsidian()` with that session's stored `questions_json`/`answers_json` and returns immediately, again skipping router/planner entirely. Otherwise a no-op that falls through to normal routing. See `project_intake.spec.md` "Retrying a failed Obsidian save".
+- **Start-trigger sub-gate**: when no active session exists AND the retry sub-gate was a no-op, `is_start_trigger_phrase()` runs — same file, still NO LLM (deterministic substring/exact-match against `_START_TRIGGER_PHRASES`/`_BARE_START_PHRASES`). If the user's text deterministically requests starting a new project, forces `run_tool_with_retries(tool_name="projectIntake", ...)` directly, same as the main gate. This closes what used to be the one LLM-dependent step in the whole feature: selecting `projectIntake` for a fresh start relied on the router picking it *and* the chat model actually emitting the tool call, and voice testing observed the small model sometimes talking about starting a project without ever invoking the tool (no session created, nothing left to gate on next turn). Normal (LLM) routing remains the fallback for phrasing this list doesn't cover. See `project_intake.spec.md` "Trigger detection".
 
 ## 4. Memory Digest (optional, SMALL models)
 
@@ -241,6 +242,7 @@ Driven by `detect_model_size(model_name) → SMALL (≤7B) | LARGE (8B+)`:
 user input
   └─▶ [3c] Project Intake Gate    (no LLM — active session? force projectIntake tool, return, done)
         └─▶ [3c] Retry sub-gate  (no LLM — no active session, but "save the plan again" + unsaved completed session? re-save, return, done)
+        └─▶ [3c] Start-trigger sub-gate  (no LLM — no active session, retry sub-gate was a no-op, but "start a new project" phrase? force projectIntake tool, return, done)
         └─▶ [2] Intent Judge            (voice only, SMALL)
         └─▶ [7] Tool router (narrows catalogue for the planner)
               └─▶ [12] Planner (gates memory; advisory for the router allow-list)

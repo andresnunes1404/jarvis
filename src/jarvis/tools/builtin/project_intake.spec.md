@@ -17,6 +17,13 @@ runs **before** the planner, and when it fires, bypasses planner/router
 entirely for that turn. Determinism lives in the code path, not in the
 model's discipline.
 
+This now covers every stage of the flow deterministically, including
+*starting* a session (see "Trigger detection" below) — closing what was
+the last LLM-dependent gap: voice testing observed the small chat model
+sometimes talking about starting a project instead of actually invoking
+`projectIntake` after the router selected it, so tool-calling reliability
+alone was not enough even for that one decision.
+
 ### Database
 
 ```sql
@@ -115,17 +122,51 @@ planner deciding to do something else with the turn.
 
 ### Trigger detection (starting a new session)
 
-When the gate finds **no** active session, normal routing applies. The
-tool's one-line description in the catalogue is what lets the router/
-planner select it for a fresh start:
+When the gate finds **no** active session, a second deterministic check
+runs — `is_start_trigger_phrase(redacted_text)` — right after the retry-
+save check (see "Retrying a failed Obsidian save"), still before the
+planner/router:
+
+```
+if get_gated_session() is None:
+    if maybe_retry_obsidian_save(...) matched: handled, return
+    if is_start_trigger_phrase(redacted_text):
+        force tool_call = {"name": "projectIntake", "arguments": {"input": redacted_text}}
+        skip planner, tool router, and memory enrichment for this turn
+```
+
+This used to be the one point in the flow where tool selection depended
+on normal (LLM) routing: the tool's one-line catalogue description —
 
 > "Call when the user wants to start a new project, kick off a new
 > piece of work, or explicitly says something like 'let's start a new
 > project' / 'vamos começar um novo projeto'."
 
-This is the only point in the flow where tool selection depends on
-normal (LLM) routing — acceptable because starting is a single,
-low-stakes classification, not a multi-turn state to lose track of.
+— relies on the router selecting `projectIntake` *and* the chat model
+actually invoking it. In voice testing the second half proved
+unreliable: the small model sometimes talked about starting a project
+("Ok, vamos começar! Que tipo de projeto...") without ever emitting a
+tool call, so no session was created and the next turn had nothing to
+gate on. `is_start_trigger_phrase` closes that gap the same way the
+restart-trigger and retry-save checks already do: NFKD-strip-accents +
+casefold normalise, then substring-match against a PT/EN keyword list
+(`_START_TRIGGER_PHRASES`) covering phrasing like "vamos começar um novo
+projeto" / "começar um novo projeto" / "let's start a new project" /
+"start a new project" / "begin a new project". Bare "novo projeto" /
+"outro projeto" are also recognised, but only by **exact match** on the
+whole (normalised) utterance rather than substring containment — a
+minimal voice command like "Novo projeto." should work, but the same two
+words appearing inside an unrelated sentence (e.g. "o novo projeto da
+câmara municipal vai custar milhões") must not hijack the turn. This is
+the same "generic marker only counts combined with something specific"
+guard `_is_retry_save_phrase` uses for its "try again" marker (there,
+paired with an explicit Obsidian mention; here, paired with being the
+entire utterance instead of a second keyword).
+
+Normal (LLM) routing is still the fallback when neither deterministic
+check fires — the tool remains in the catalogue and the router/planner
+can still select it for phrasing this list doesn't cover — but starting
+a session no longer *depends* on that path succeeding.
 
 ### Flow
 
@@ -427,3 +468,14 @@ abandon turn   → "Ok, cancelei o intake do projeto. Diz 'vamos começar um nov
   successful save does not re-trigger. Engine-level wiring tests confirm
   a matching retry phrase skips `plan_query`/`select_tools` entirely,
   same as the main gate.
+- Start-trigger tests: recognised PT/EN phrasings (including bare "novo
+  projeto"/"outro projeto" as a whole utterance) match; realistic
+  unrelated mentions of a project (a longer sentence merely containing
+  "novo projeto"/"new project" as a substring) do not. Engine-level
+  wiring tests confirm a matching start-trigger phrase with no active
+  session forces `projectIntake` and creates a session while skipping
+  `plan_query`/`select_tools`; that the retry-save check is tried first
+  (a phrase matching both resolves via retry-save when a qualifying
+  session exists); and that a start-trigger phrase while a session is
+  already active is handled entirely by the main gate (restart-trigger
+  reply), never by this second check.
