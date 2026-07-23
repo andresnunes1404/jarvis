@@ -13,6 +13,24 @@ from dataclasses import dataclass, field
 from typing import Dict, List, Optional
 import pytest
 
+# The reply engine prints emoji-laden progress lines straight to stdout
+# (e.g. "🔧 Tools (...): ... selected"). In the real app this is safe
+# because daemon.py wraps sys.stdout/stderr in a UTF-8 TextIOWrapper before
+# the engine ever runs. Evals call run_reply_engine() directly, bypassing
+# that wrapper, so on a Windows console defaulting to cp1252 an emoji print
+# raises UnicodeEncodeError and the eval crashes instead of failing on its
+# actual assertions. Reconfigure in place (rather than swapping the stream
+# object, as daemon.py does) so pytest's own capture manager — which holds
+# a reference to the original stdout/stderr objects — keeps working under
+# both `-s` and default capture modes.
+if sys.platform == "win32" and not getattr(sys, "frozen", False):
+    for _stream in (sys.stdout, sys.stderr):
+        if hasattr(_stream, "reconfigure"):
+            try:
+                _stream.reconfigure(encoding="utf-8", errors="replace")
+            except Exception:
+                pass
+
 # Robustly locate repository root
 _this_file = Path(__file__).resolve()
 ROOT = None
