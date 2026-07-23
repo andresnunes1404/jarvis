@@ -319,3 +319,116 @@ class TestObsidianWrite:
         assert "falhou a gravação no Obsidian" in result.reply_text
         # Must not claim success it can't back up.
         assert "concluído" in result.reply_text
+
+    def test_successful_write_marks_session_obsidian_saved(self, db, mock_config):
+        with patch.object(pi, "MCPClient") as mock_client_cls:
+            mock_client = Mock()
+            mock_client.invoke_tool.return_value = {"isError": False, "text": "ok"}
+            mock_client_cls.return_value = mock_client
+
+            self._complete_a_session(db, mock_config)
+
+        row = db.conn.execute(
+            "SELECT obsidian_saved FROM project_intake_sessions ORDER BY id DESC LIMIT 1"
+        ).fetchone()
+        assert row["obsidian_saved"] == 1
+
+    def test_failed_write_leaves_session_obsidian_unsaved(self, db, mock_config):
+        with patch.object(pi, "MCPClient") as mock_client_cls:
+            mock_client = Mock()
+            mock_client.invoke_tool.side_effect = pi.MCPServerSessionError("session lost")
+            mock_client_cls.return_value = mock_client
+
+            self._complete_a_session(db, mock_config)
+
+        row = db.conn.execute(
+            "SELECT obsidian_saved FROM project_intake_sessions ORDER BY id DESC LIMIT 1"
+        ).fetchone()
+        assert row["obsidian_saved"] == 0
+
+
+class TestObsidianRetry:
+    """Retrying a failed Obsidian save after the intake session is already
+    'completed' must be a deterministic path back to the real stored
+    answers, never free-form LLM routing that could fabricate content or
+    falsely confirm success. See project_intake.spec.md "Retrying a
+    failed Obsidian save"."""
+
+    def _complete_with_failed_save(self, db, mock_config):
+        tool = ProjectIntakeTool()
+        tool.run({"input": "novo projeto"}, _make_context(db, mock_config))
+        tool.run({"input": "outro"}, _make_context(db, mock_config))
+        session = db.get_active_intake_session()
+        questions = pi.json.loads(session["questions_json"])
+        answers = []
+        for i in range(len(questions)):
+            answers.append(f"resposta real {i}")
+            with patch.object(pi, "write_brief_to_obsidian", return_value=False):
+                tool.run({"input": f"resposta real {i}"}, _make_context(db, mock_config))
+        return questions, answers
+
+    def test_retry_phrase_resends_real_stored_answers_not_fabricated(self, db, mock_config):
+        questions, answers = self._complete_with_failed_save(db, mock_config)
+
+        with patch.object(pi, "write_brief_to_obsidian", return_value=True) as mock_write:
+            reply = pi.maybe_retry_obsidian_save(
+                db, mock_config, "tenta guardar o plano outra vez"
+            )
+
+        assert reply is not None
+        assert "obsidian" in reply.lower()
+        mock_write.assert_called_once()
+        sent_questions, sent_answers = mock_write.call_args[0][3], mock_write.call_args[0][4]
+        assert sent_questions == questions
+        assert sent_answers == answers  # the real stored answers, never fabricated text
+
+        row = db.conn.execute(
+            "SELECT obsidian_saved FROM project_intake_sessions ORDER BY id DESC LIMIT 1"
+        ).fetchone()
+        assert row["obsidian_saved"] == 1
+
+    def test_retry_phrase_english_phrasing_also_matches(self, db, mock_config):
+        self._complete_with_failed_save(db, mock_config)
+
+        with patch.object(pi, "write_brief_to_obsidian", return_value=True):
+            reply = pi.maybe_retry_obsidian_save(
+                db, mock_config, "try to save the plan again on Obsidian"
+            )
+
+        assert reply is not None
+        assert "obsidian" in reply.lower()
+
+    def test_retry_failure_reports_honest_failure_again(self, db, mock_config):
+        self._complete_with_failed_save(db, mock_config)
+
+        with patch.object(pi, "write_brief_to_obsidian", return_value=False):
+            reply = pi.maybe_retry_obsidian_save(
+                db, mock_config, "grava o plano outra vez"
+            )
+
+        assert reply is not None
+        assert "continuo" in reply.lower() or "não" in reply.lower() or "nao" in reply.lower()
+
+        row = db.conn.execute(
+            "SELECT obsidian_saved FROM project_intake_sessions ORDER BY id DESC LIMIT 1"
+        ).fetchone()
+        assert row["obsidian_saved"] == 0  # still not saved — must not falsely confirm
+
+    def test_retry_phrase_without_failed_session_is_noop(self, db, mock_config):
+        assert pi.maybe_retry_obsidian_save(db, mock_config, "grava o plano outra vez") is None
+
+    def test_retry_phrase_unrelated_text_is_noop(self, db, mock_config):
+        self._complete_with_failed_save(db, mock_config)
+        assert pi.maybe_retry_obsidian_save(db, mock_config, "que horas são?") is None
+
+    def test_retry_after_successful_save_does_not_retrigger(self, db, mock_config):
+        tool = ProjectIntakeTool()
+        tool.run({"input": "novo projeto"}, _make_context(db, mock_config))
+        tool.run({"input": "outro"}, _make_context(db, mock_config))
+        session = db.get_active_intake_session()
+        questions = pi.json.loads(session["questions_json"])
+        with patch.object(pi, "write_brief_to_obsidian", return_value=True):
+            for i in range(len(questions)):
+                tool.run({"input": f"resposta {i}"}, _make_context(db, mock_config))
+
+        assert pi.maybe_retry_obsidian_save(db, mock_config, "grava o plano outra vez") is None

@@ -74,6 +74,32 @@ _RESTART_TRIGGER_PHRASES = [
     "outro projeto",
 ]
 
+# Substrings recognising a request to re-attempt a previously failed
+# Obsidian save, once the intake session is already completed (so the
+# gate no longer forces projectIntake). Same style as the phrase lists
+# above: NFKD+casefold normalised substring match, language-agnostic by
+# listing both PT/EN phrasings rather than detecting language.
+_RETRY_SAVE_PHRASES = [
+    "grava o plano",
+    "gravar o plano",
+    "guarda o plano",
+    "guardar o plano",
+    "salva o plano",
+    "salvar o plano",
+    "save the plan",
+]
+
+# Generic "try again" phrasing is too broad to match on its own (it would
+# hijack unrelated retry requests), so it only counts when the message
+# also names Obsidian explicitly.
+_GENERIC_RETRY_MARKERS = [
+    "tenta outra vez",
+    "tenta de novo",
+    "tenta guardar outra vez",
+    "try again",
+    "try it again",
+]
+
 _FALLBACK_TEMPLATES: Dict[str, Any] = {
     "other": {
         "label": "Outro / Genérico",
@@ -104,6 +130,14 @@ def _is_abandon_phrase(normalized_text: str) -> bool:
 
 def _is_restart_trigger_phrase(normalized_text: str) -> bool:
     return any(phrase in normalized_text for phrase in _RESTART_TRIGGER_PHRASES)
+
+
+def _is_retry_save_phrase(normalized_text: str) -> bool:
+    if any(phrase in normalized_text for phrase in _RETRY_SAVE_PHRASES):
+        return True
+    if "obsidian" in normalized_text:
+        return any(marker in normalized_text for marker in _GENERIC_RETRY_MARKERS)
+    return False
 
 
 def load_templates(cfg: Any) -> Dict[str, Any]:
@@ -257,6 +291,65 @@ def write_brief_to_obsidian(
     return ok
 
 
+RETRY_SAVE_FAILURE_REPLY = (
+    "Continuo sem conseguir guardar o plano no Obsidian. Confirma que o "
+    "Obsidian está aberto e tenta outra vez mais tarde."
+)
+
+RETRY_SAVE_SUCCESS_REPLY = "✅ Plano guardado no Obsidian."
+
+
+def maybe_retry_obsidian_save(db: Any, cfg: Any, text: str) -> Optional[str]:
+    """Deterministic retry path for "save the plan again" after a failed
+    Obsidian write, once the intake session is already ``status='completed'``
+    (so ``get_gated_session`` no longer forces the tool). Runs only when the
+    gate found no active session. See project_intake.spec.md "Retrying a
+    failed Obsidian save".
+
+    Re-sends the real ``questions_json``/``answers_json`` stored on the most
+    recent unsaved completed session — never the caller's own text — and
+    only reports success once ``write_brief_to_obsidian`` itself confirms
+    it. Fail-open: returns ``None`` (no-op, falls through to normal
+    routing) on any lookup/matching miss or DB error, so this can never
+    corrupt or hijack an unrelated turn.
+    """
+    try:
+        normalized = _normalize(text)
+        if not _is_retry_save_phrase(normalized):
+            return None
+        session = db.get_last_unsaved_completed_session()
+        if session is None:
+            return None
+        session["id"]  # shape check — raises on non-row-like objects
+    except Exception as e:
+        debug_log(f"project intake retry: session lookup failed (fail-open): {e}", "tools")
+        return None
+
+    try:
+        questions = json.loads(session["questions_json"] or "[]")
+        answers = json.loads(session["answers_json"] or "[]")
+    except (ValueError, TypeError) as e:
+        debug_log(f"project intake retry: malformed session state, skipping: {e}", "tools")
+        return None
+
+    templates = load_templates(cfg)
+    tmpl = templates.get(session["project_type"]) or _FALLBACK_TEMPLATES["other"]
+    label = tmpl.get("label", session["project_type"] or "Projeto")
+
+    debug_log(
+        f"project intake retry: re-attempting Obsidian save for session {session['id']}", "tools"
+    )
+    ok = write_brief_to_obsidian(cfg, label, session["project_type"] or "other", questions, answers)
+    if not ok:
+        return RETRY_SAVE_FAILURE_REPLY
+
+    try:
+        db.update_intake_session(session["id"], obsidian_saved=1)
+    except Exception as e:
+        debug_log(f"project intake retry: failed to mark obsidian_saved: {e}", "tools")
+    return RETRY_SAVE_SUCCESS_REPLY
+
+
 class ProjectIntakeTool(Tool):
     """Deterministic multi-turn interview to build a project brief.
 
@@ -390,7 +483,12 @@ class ProjectIntakeTool(Tool):
         obsidian_ok = write_brief_to_obsidian(
             context.cfg, label, session["project_type"] or "other", questions, answers,
         )
-        if not obsidian_ok:
+        if obsidian_ok:
+            try:
+                context.db.update_intake_session(session["id"], obsidian_saved=1)
+            except Exception as e:
+                debug_log(f"projectIntake: failed to mark obsidian_saved: {e}", "tools")
+        else:
             brief_text += (
                 "\n\n⚠️ brief guardado localmente, mas falhou a gravação no "
                 "Obsidian — tenta 'grava o plano' outra vez mais tarde."

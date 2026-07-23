@@ -30,10 +30,17 @@ project_intake_sessions (
   answers_json TEXT NOT NULL DEFAULT '[]',
   current_index INTEGER NOT NULL DEFAULT 0,
   abandoned INTEGER NOT NULL DEFAULT 0,  -- see "Abandoning an in-progress interview"
+  obsidian_saved INTEGER NOT NULL DEFAULT 0,  -- see "Retrying a failed Obsidian save"
   created_at TEXT NOT NULL,
   updated_at TEXT NOT NULL
 )
 ```
+
+A pre-existing on-disk database (one created before `obsidian_saved`
+existed) gets the column added via an `ALTER TABLE` migration in
+`Database._migrate_schema`, guarded by `PRAGMA table_info` so it's
+idempotent on every startup — `CREATE TABLE IF NOT EXISTS` alone only
+covers brand-new databases.
 
 One active (`status != 'completed'`) row per `conversation_id` at a time.
 Starting a new project while one is already in progress is handled as a
@@ -186,9 +193,51 @@ the vault before any agent work is dispatched.
   tenta 'grava o plano' outra vez mais tarde") rather than claiming
   success it can't back up. This is the same rule as everywhere else in
   the system: never confirm an action the tool result didn't confirm.
+- `obsidian_saved` is set to `1` only once `write_brief_to_obsidian`
+  actually confirms the write; it stays `0` if the write fails or was
+  never attempted. This is what makes the retry path below possible —
+  see "Retrying a failed Obsidian save".
 - The `project_intake_sessions` row stays `status='completed'` for
   history; it is not deleted. A later "vamos começar um novo projeto"
   always opens a fresh row.
+
+### Retrying a failed Obsidian save
+
+Once a session is `status='completed'`, the gate no longer forces
+`projectIntake` — a plain "tenta guardar o plano outra vez" / "try to
+save the plan again on Obsidian" at that point would otherwise fall
+through to normal LLM tool routing, which has no access to the real
+interview data and would invent its own content, and could falsely
+confirm success without any actual write.
+
+Instead, `maybe_retry_obsidian_save(db, cfg, text)` runs (in
+`run_reply_engine`, right after the main gate check, when it found no
+active session) as a second deterministic, no-LLM check:
+
+1. Normalise `text` the same way as every other phrase check in this
+   file (NFKD-strip-accents + casefold) and match it against a
+   substring keyword list covering both PT/EN phrasing ("grava o
+   plano" / "guarda o plano" / "save the plan" / ...). A generic "try
+   again" style phrase only counts when the message also names
+   Obsidian explicitly, to avoid hijacking unrelated retry requests.
+2. If it matches, look up `db.get_last_unsaved_completed_session()` —
+   the most recent `status='completed', abandoned=0, obsidian_saved=0`
+   row. No match on either the phrase or a qualifying session → return
+   `None`, a no-op that lets the turn fall through to normal routing
+   untouched.
+3. Re-run `write_brief_to_obsidian` using that session's own stored
+   `questions_json`/`answers_json` (loaded from the DB) and its
+   resolved template label — never the caller's own text, so the
+   retried content is guaranteed to be the real interview answers.
+4. On success: set `obsidian_saved=1` and reply "✅ Plano guardado no
+   Obsidian." On failure: reply the same honest-failure message as the
+   original completion path, and leave `obsidian_saved=0` so a further
+   retry attempt is still possible.
+
+A session that already has `obsidian_saved=1` is not returned by
+`get_last_unsaved_completed_session`, so a repeated retry phrase after a
+confirmed successful save is a no-op — normal routing handles it (there
+is nothing left to retry).
 
 **Implementation note**: no question in the current templates explicitly
 captures a project name, and `project_name` is never populated, so today
@@ -368,3 +417,13 @@ abandon turn   → "Ok, cancelei o intake do projeto. Diz 'vamos começar um nov
   `in_progress` transition returns a friendly error without corrupting
   the real session; malformed `questions_json`/`answers_json` triggers a
   friendly abandon instead of crashing the turn.
+- Obsidian-save tests: a successful write sets `obsidian_saved=1`; a
+  failed write leaves it `0`.
+- Retry-save tests: the retry phrase after a failed save re-sends the
+  real stored `questions_json`/`answers_json` (not fabricated content)
+  and only reports success once the retried write itself confirms it;
+  the retry phrase with no failed session, or with unrelated text, is a
+  no-op that falls through to normal routing; a second retry after a
+  successful save does not re-trigger. Engine-level wiring tests confirm
+  a matching retry phrase skips `plan_query`/`select_tools` entirely,
+  same as the main gate.

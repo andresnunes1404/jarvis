@@ -86,3 +86,62 @@ class TestProjectIntakeGateWiring:
                     text="olá",
                     dialogue_memory=dialogue_memory,
                 )
+
+
+class TestObsidianRetryGateWiring:
+    """A 'save the plan again' phrase after a completed-but-unsaved session
+    must be resolved deterministically, without ever reaching the
+    planner/router (which would fabricate content). See
+    project_intake.spec.md "Retrying a failed Obsidian save"."""
+
+    def _make_completed_unsaved_session(self, db):
+        session_id = db.insert_intake_session()
+        db.update_intake_session(
+            session_id,
+            project_type="other",
+            status="in_progress",
+            questions_json='["Qual e o nome do projeto?"]',
+            current_index=1,
+        )
+        db.update_intake_session(session_id, answers_json='["Website da loja"]')
+        db.update_intake_session(session_id, status="completed")
+        return session_id
+
+    def test_retry_phrase_forces_deterministic_resave_and_skips_planner(
+        self, db, mock_config, dialogue_memory
+    ):
+        from jarvis.reply import engine as engine_mod
+        from jarvis.tools.builtin import project_intake as pi
+
+        self._make_completed_unsaved_session(db)
+
+        with patch.object(pi, "write_brief_to_obsidian", return_value=True) as mock_write, \
+             patch.object(engine_mod, "plan_query") as mock_plan, \
+             patch.object(engine_mod, "select_tools") as mock_select:
+            reply = engine_mod.run_reply_engine(
+                db=db, cfg=mock_config, tts=None,
+                text="tenta guardar o plano outra vez",
+                dialogue_memory=dialogue_memory,
+            )
+
+        assert "obsidian" in reply.lower()
+        mock_write.assert_called_once()
+        sent_answers = mock_write.call_args[0][4]
+        assert sent_answers == ["Website da loja"]  # the real stored answer
+        mock_plan.assert_not_called()
+        mock_select.assert_not_called()
+
+    def test_unrelated_text_with_unsaved_session_reaches_normal_routing(
+        self, db, mock_config, dialogue_memory
+    ):
+        from jarvis.reply import engine as engine_mod
+
+        self._make_completed_unsaved_session(db)
+
+        with patch.object(engine_mod, "select_tools", side_effect=_raise_router_reached):
+            with pytest.raises(_RouterReached):
+                engine_mod.run_reply_engine(
+                    db=db, cfg=mock_config, tts=None,
+                    text="olá",
+                    dialogue_memory=dialogue_memory,
+                )

@@ -67,6 +67,7 @@ Every distinct LLM call in Jarvis, what feeds it, what consumes it, and how it i
 - **Output**: if a non-completed `project_intake_sessions` row exists, forces `run_tool_with_retries(tool_name="projectIntake", tool_args={"input": redacted})` directly, prints/speaks/records the tool's `reply_text` verbatim, and returns immediately — the router, planner, memory enrichment, and the entire agentic LLM loop are all skipped for this turn. Fail-open on any DB error or malformed row shape (`get_gated_session` catches and treats it as "no session", falling through to normal routing).
 - **Rationale**: multi-turn interview state must survive turns deterministically; a fresh planner/router call every turn has no guarantee of recognising "mid-interview" the way a small local model might miss it. See `project_intake.spec.md` "Why a gate, not just a tool".
 - **Data-flow edge**: this is also the first builtin tool invocation in the app that calls out to an MCP server (Obsidian "Jarvis Brain") directly from tool code rather than via the LLM's own tool-call loop — see `ProjectIntakeTool.run()` → `write_brief_to_obsidian()` on interview completion, and the separate `StartProjectDevelopmentTool` for the later Antigravity hand-off trigger.
+- **Retry sub-gate**: when no active session exists, `maybe_retry_obsidian_save()` runs immediately after — same file, same wiring point, still NO LLM (deterministic phrase match + `Database.get_last_unsaved_completed_session()`). If the user's text matches a "save the plan again" phrase and a `status='completed', obsidian_saved=0` row exists, it re-runs `write_brief_to_obsidian()` with that session's stored `questions_json`/`answers_json` and returns immediately, again skipping router/planner entirely. Otherwise a no-op that falls through to normal routing. See `project_intake.spec.md` "Retrying a failed Obsidian save".
 
 ## 4. Memory Digest (optional, SMALL models)
 
@@ -239,6 +240,7 @@ Driven by `detect_model_size(model_name) → SMALL (≤7B) | LARGE (8B+)`:
 ```
 user input
   └─▶ [3c] Project Intake Gate    (no LLM — active session? force projectIntake tool, return, done)
+        └─▶ [3c] Retry sub-gate  (no LLM — no active session, but "save the plan again" + unsaved completed session? re-save, return, done)
         └─▶ [2] Intent Judge            (voice only, SMALL)
         └─▶ [7] Tool router (narrows catalogue for the planner)
               └─▶ [12] Planner (gates memory; advisory for the router allow-list)

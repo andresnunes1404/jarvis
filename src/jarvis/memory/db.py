@@ -54,6 +54,7 @@ CREATE TABLE IF NOT EXISTS project_intake_sessions (
   answers_json    TEXT NOT NULL DEFAULT '[]',
   current_index   INTEGER NOT NULL DEFAULT 0,
   abandoned       INTEGER NOT NULL DEFAULT 0,
+  obsidian_saved  INTEGER NOT NULL DEFAULT 0,
   created_at      TEXT NOT NULL,
   updated_at      TEXT NOT NULL
 );
@@ -146,7 +147,25 @@ class Database:
             cur.executescript(_SCHEMA_SQL)
             if self.is_vss_enabled:
                 cur.executescript(_VSS_SCHEMA_SQL)
+            self._migrate_schema(cur)
             self.conn.commit()
+
+    def _migrate_schema(self, cur: sqlite3.Cursor) -> None:
+        """Add columns to tables that pre-date them.
+
+        ``CREATE TABLE IF NOT EXISTS`` only covers brand-new databases —
+        an on-disk DB from before a column was introduced needs an
+        explicit ``ALTER TABLE`` to catch up. Guarded by ``PRAGMA
+        table_info`` so this is idempotent on every startup.
+        """
+        existing_cols = {
+            row[1] for row in cur.execute("PRAGMA table_info(project_intake_sessions)")
+        }
+        if "obsidian_saved" not in existing_cols:
+            cur.execute(
+                "ALTER TABLE project_intake_sessions "
+                "ADD COLUMN obsidian_saved INTEGER NOT NULL DEFAULT 0"
+            )
 
     
 
@@ -397,6 +416,7 @@ class Database:
         answers_json: Optional[str] = None,
         current_index: Optional[int] = None,
         abandoned: Optional[int] = None,
+        obsidian_saved: Optional[int] = None,
     ) -> bool:
         fields = []
         values: list = []
@@ -414,6 +434,8 @@ class Database:
             fields.append("current_index = ?"); values.append(current_index)
         if abandoned is not None:
             fields.append("abandoned = ?"); values.append(abandoned)
+        if obsidian_saved is not None:
+            fields.append("obsidian_saved = ?"); values.append(obsidian_saved)
         if not fields:
             return False
         fields.append("updated_at = ?")
@@ -427,6 +449,24 @@ class Database:
             )
             self.conn.commit()
             return cur.rowcount > 0
+
+    def get_last_unsaved_completed_session(self) -> Optional[sqlite3.Row]:
+        """Return the most recent completed, non-abandoned session whose
+        Obsidian write never succeeded (``obsidian_saved = 0``), if any.
+
+        Backs the deterministic "save the plan again" retry path — see
+        project_intake.spec.md "Retrying a failed Obsidian save".
+        """
+        with self._lock:
+            cur = self.conn.cursor()
+            row = cur.execute(
+                """
+                SELECT * FROM project_intake_sessions
+                WHERE status = 'completed' AND abandoned = 0 AND obsidian_saved = 0
+                ORDER BY id DESC LIMIT 1
+                """
+            ).fetchone()
+            return row
 
     # --- Conversation Summaries API ---
     def upsert_conversation_summary(

@@ -840,7 +840,7 @@ def run_reply_engine(db: "Database", cfg, tts: Optional[Any],
     # Fail-open: any DB error is treated as "no session" by
     # get_gated_session. See project_intake.spec.md "The gate".
     if getattr(cfg, "project_intake_enabled", True):
-        from ..tools.builtin.project_intake import get_gated_session
+        from ..tools.builtin.project_intake import get_gated_session, maybe_retry_obsidian_save
         _intake_session = get_gated_session(db, cfg)
         if _intake_session is not None:
             debug_log("project intake gate: active session, forcing projectIntake tool call", "tools")
@@ -856,6 +856,16 @@ def run_reply_engine(db: "Database", cfg, tts: Optional[Any],
                 language=language,
             )
             return _deliver_intake_reply(_intake_result.reply_text)
+
+        # No active session — check for a deterministic "save the plan
+        # again" retry against the most recent completed-but-unsaved
+        # session, so this never falls through to free-form LLM routing
+        # that would fabricate the brief's content. See
+        # project_intake.spec.md "Retrying a failed Obsidian save".
+        _retry_reply = maybe_retry_obsidian_save(db, cfg, redacted)
+        if _retry_reply is not None:
+            debug_log("project intake gate: retry-save phrase matched, re-attempting Obsidian write", "tools")
+            return _deliver_intake_reply(_retry_reply)
 
     # Step 2: Check for recent dialogue context
     recent_messages = []
