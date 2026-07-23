@@ -4,7 +4,7 @@ no active session must leave normal routing untouched; a DB error on
 session lookup must fail open. See project_intake.spec.md "The gate".
 """
 
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 import pytest
 
@@ -263,5 +263,119 @@ class TestStartTriggerGateWiring:
                 engine_mod.run_reply_engine(
                     db=db, cfg=mock_config, tts=None,
                     text="o novo projeto da câmara municipal vai custar milhões",
+                    dialogue_memory=dialogue_memory,
+                )
+
+
+class TestDevelopmentStartTriggerGateWiring:
+    """Starting development on an existing plan must not depend on the
+    chat model reliably invoking startProjectDevelopment after the router
+    selects it — a recognised development-start phrase must force the
+    tool call directly, bypassing planner/router, but only after the main
+    gate, retry-save check, and intake start-trigger check have all found
+    nothing (unfinished intake state always takes priority). See
+    project_intake.spec.md "Starting development"."""
+
+    def _mock_mcp_client(self, responses):
+        client = Mock()
+        client.invoke_tool.side_effect = [
+            {"isError": is_error, "text": text} for is_error, text in responses
+        ]
+        return client
+
+    def test_development_start_phrase_forces_tool_call(self, db, mock_config, dialogue_memory):
+        from jarvis.reply import engine as engine_mod
+        from jarvis.tools.builtin import project_intake as pi
+
+        note_content = "---\nstatus: active\ntype: plan\n---\n## Status\nPlano criado."
+        responses = [
+            (False, "Projects/unico/unico.md"),
+            (False, note_content),
+            (False, "dispatched"),
+            (False, "patched"),
+        ]
+
+        with patch.object(pi, "MCPClient", return_value=self._mock_mcp_client(responses)), \
+             patch.object(engine_mod, "plan_query") as mock_plan, \
+             patch.object(engine_mod, "select_tools") as mock_select:
+            reply = engine_mod.run_reply_engine(
+                db=db, cfg=mock_config, tts=None,
+                text="avança com o desenvolvimento",
+                dialogue_memory=dialogue_memory,
+            )
+
+        assert "enviado para" in reply.lower()
+        mock_plan.assert_not_called()
+        mock_select.assert_not_called()
+
+    def test_active_intake_session_takes_priority_over_development_start_phrase(
+        self, db, mock_config, dialogue_memory
+    ):
+        from jarvis.reply import engine as engine_mod
+
+        db.insert_intake_session()
+
+        with patch.object(engine_mod, "plan_query") as mock_plan, \
+             patch.object(engine_mod, "select_tools") as mock_select:
+            reply = engine_mod.run_reply_engine(
+                db=db, cfg=mock_config, tts=None,
+                text="avança com o desenvolvimento",
+                dialogue_memory=dialogue_memory,
+            )
+
+        # The active intake gate wins — this text isn't a recognised
+        # abandon/restart phrase, so it's treated as free-text input to
+        # the pending "awaiting_type" question (resolving to the fallback
+        # template and asking its first question), not routed to
+        # development at all.
+        assert "nome do projeto" in reply.lower()
+        mock_plan.assert_not_called()
+        mock_select.assert_not_called()
+
+    def test_pending_retry_takes_priority_over_development_start_phrase(
+        self, db, mock_config, dialogue_memory
+    ):
+        from jarvis.reply import engine as engine_mod
+        from jarvis.tools.builtin import project_intake as pi
+
+        session_id = db.insert_intake_session()
+        db.update_intake_session(
+            session_id,
+            project_type="other",
+            status="in_progress",
+            questions_json='["Qual e o nome do projeto?"]',
+            current_index=1,
+        )
+        db.update_intake_session(session_id, answers_json='["Website da loja"]')
+        db.update_intake_session(session_id, status="completed")
+
+        # Ambiguous text: matches both the retry-save phrase and (via the
+        # "delega ao antigravity" substring) the development-start phrase.
+        ambiguous_text = "grava o plano outra vez e depois delega ao antigravity"
+
+        with patch.object(pi, "write_brief_to_obsidian", return_value=True) as mock_write, \
+             patch.object(engine_mod, "plan_query") as mock_plan, \
+             patch.object(engine_mod, "select_tools") as mock_select:
+            reply = engine_mod.run_reply_engine(
+                db=db, cfg=mock_config, tts=None,
+                text=ambiguous_text,
+                dialogue_memory=dialogue_memory,
+            )
+
+        assert "obsidian" in reply.lower()
+        mock_write.assert_called_once()  # retry path, not a fresh development-start call
+        mock_plan.assert_not_called()
+        mock_select.assert_not_called()
+
+    def test_unrelated_development_mention_reaches_normal_routing(
+        self, db, mock_config, dialogue_memory
+    ):
+        from jarvis.reply import engine as engine_mod
+
+        with patch.object(engine_mod, "select_tools", side_effect=_raise_router_reached):
+            with pytest.raises(_RouterReached):
+                engine_mod.run_reply_engine(
+                    db=db, cfg=mock_config, tts=None,
+                    text="os relatórios mostram que o país avança com o desenvolvimento económico",
                     dialogue_memory=dialogue_memory,
                 )

@@ -8,6 +8,8 @@ development".
 import json
 from unittest.mock import Mock, patch
 
+import pytest
+
 from jarvis.tools.base import ToolContext
 from jarvis.tools.builtin import project_intake as pi
 from jarvis.tools.builtin.project_intake import (
@@ -218,3 +220,39 @@ class TestExtractReadContent:
 
     def test_falls_back_to_raw_text_when_not_json(self):
         assert _extract_read_content("# Title\nBody") == "# Title\nBody"
+
+
+class TestDevelopmentStartTriggerPhrase:
+    """Deterministic recognition of a 'start development' request, so
+    invoking startProjectDevelopment no longer depends on the chat model
+    reliably calling the tool after the router selects it. See
+    project_intake.spec.md "Starting development"."""
+
+    @pytest.mark.parametrize("text", [
+        "avança com o desenvolvimento",
+        "Avança com o desenvolvimento.",
+        "avança com o projeto",
+        "começa o desenvolvimento",
+        "delega ao antigravity",
+        "delega isto ao antigravity",
+        "Ok, delega ao Antigravity agora.",
+        "start development",
+        "start building",
+        "delegate to antigravity",
+        "delegate this to antigravity",
+        "let's delegate this to antigravity",
+    ])
+    def test_recognised_phrasings_trigger(self, text):
+        assert pi.is_development_start_trigger_phrase(text) is True
+
+    @pytest.mark.parametrize("text", [
+        "os relatórios mostram que o país avança com o desenvolvimento económico",
+        "a equipa da câmara avança com o projeto de requalificação urbana",
+        "quando começa o desenvolvimento da vacina é uma incógnita",
+        "we really need to start building trust with the client before the renewal",
+        "I want to start development work on my thesis next week",
+        "que horas são?",
+        "",
+    ])
+    def test_unrelated_mentions_do_not_trigger(self, text):
+        assert pi.is_development_start_trigger_phrase(text) is False

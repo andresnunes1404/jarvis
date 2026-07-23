@@ -134,6 +134,37 @@ _START_TRIGGER_PHRASES = [
 # with being the entire message" instead of a second keyword.
 _BARE_START_PHRASES = {"novo projeto", "outro projeto"}
 
+# Substrings recognising a request to start development on an already
+# saved plan, deterministically — see "Starting development" in
+# project_intake.spec.md. Mirrors is_start_trigger_phrase: the router
+# selecting startProjectDevelopment is not enough on its own — observed
+# in voice testing, the small model narrated "Iniciando o
+# desenvolvimento do projeto..." instead of actually invoking the tool —
+# so this is a second, code-level safety net that forces the call.
+# Phrases naming Antigravity explicitly are safe to match anywhere in
+# the message: the product name is specific enough that an unrelated
+# mention is implausible.
+_DEVELOPMENT_START_TRIGGER_PHRASES = [
+    "delega ao antigravity",
+    "delega isto ao antigravity",
+    "delegate to antigravity",
+    "delegate this to antigravity",
+]
+
+# Generic action phrases like "avança com o desenvolvimento" are also
+# plausible in unrelated conversation (e.g. "o país avança com o
+# desenvolvimento económico", "precisamos de start building trust com o
+# cliente"). Unlike the Antigravity-specific phrases above, these only
+# count when they make up essentially the whole utterance — same
+# exact-match treatment as _BARE_START_PHRASES.
+_BARE_DEVELOPMENT_START_PHRASES = {
+    "avanca com o desenvolvimento",
+    "avanca com o projeto",
+    "comeca o desenvolvimento",
+    "start development",
+    "start building",
+}
+
 _FALLBACK_TEMPLATES: Dict[str, Any] = {
     "other": {
         "label": "Outro / Genérico",
@@ -186,6 +217,20 @@ def is_start_trigger_phrase(text: str) -> bool:
     project_intake.spec.md "Trigger detection".
     """
     return _is_start_trigger_phrase(_normalize(text))
+
+
+def _is_development_start_trigger_phrase(normalized_text: str) -> bool:
+    if any(phrase in normalized_text for phrase in _DEVELOPMENT_START_TRIGGER_PHRASES):
+        return True
+    return normalized_text.rstrip(".!? ") in _BARE_DEVELOPMENT_START_PHRASES
+
+
+def is_development_start_trigger_phrase(text: str) -> bool:
+    """Public entry point for the pre-planner gate: does ``text``
+    deterministically request starting development on an existing plan?
+    See project_intake.spec.md "Starting development".
+    """
+    return _is_development_start_trigger_phrase(_normalize(text))
 
 
 def load_templates(cfg: Any) -> Dict[str, Any]:

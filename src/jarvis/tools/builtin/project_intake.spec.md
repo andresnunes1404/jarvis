@@ -323,12 +323,40 @@ names/shapes still hold.
 
 ### Starting development (separate trigger, any later session)
 
-A distinct, stateless tool/directive — no gate needed here, because
-this is a single-shot classification ("the user wants to kick off
-development on an existing plan"), not multi-turn state to protect.
+A distinct, stateless tool/directive from `projectIntake` — no
+multi-turn state to protect here, since this is a single-shot
+classification ("the user wants to kick off development on an existing
+plan"). It does, however, share the same pre-planner gate area as a
+fourth deterministic sub-check (see "Trigger detection" above): the
+router selecting `startProjectDevelopment` is not enough on its own —
+voice testing observed the small chat model narrating "Iniciando o
+desenvolvimento do projeto..." instead of actually invoking the tool,
+the same failure mode already fixed for starting a fresh intake.
+`is_development_start_trigger_phrase(redacted_text)` runs after
+`get_gated_session`, `maybe_retry_obsidian_save`, and
+`is_start_trigger_phrase` all find nothing (an active intake session or
+a pending Obsidian retry — both unfinished state — always take
+priority over a development-start phrase). When it matches, the engine
+forces `run_tool_with_retries(tool_name="startProjectDevelopment", ...)`
+directly, same as the other deterministic paths, bypassing the
+planner/router entirely.
 
-Trigger phrasing: "vamos começar o desenvolvimento", "avança com o
-projeto X", "manda isto para os agentes".
+Same NFKD-strip-accents + casefold + substring-match style as the other
+checks in this file. Phrases naming Antigravity explicitly ("delega ao
+antigravity", "delega isto ao antigravity", "delegate to antigravity",
+"delegate this to antigravity") are safe to match anywhere in the
+message — the product name is specific enough that an unrelated mention
+is implausible. Generic action phrases ("avança com o desenvolvimento",
+"avança com o projeto", "começa o desenvolvimento", "start
+development", "start building") are also plausible in unrelated
+conversation (e.g. "o país avança com o desenvolvimento económico"), so
+— same treatment as intake's bare "novo projeto"/"outro projeto" — they
+only count on an exact whole-utterance match, not substring
+containment.
+
+Trigger phrasing (tool description, for router selection): "vamos
+começar o desenvolvimento", "avança com o projeto X", "manda isto para
+os agentes".
 
 1. Resolve **which** project: if the user named one, match it against
    note filenames/`project` slugs in the vault via the Obsidian MCP
@@ -518,3 +546,13 @@ abandon turn   → "Ok, cancelei o intake do projeto. Diz 'vamos começar um nov
   one active plan note resolves to it directly rather than reporting "no
   plan found"; the same free-text input with two active plan notes asks
   which one instead of guessing or reporting zero results.
+- Development-start trigger tests: recognised phrasings naming
+  Antigravity explicitly, and the generic action phrases as a whole
+  utterance, match; realistic unrelated mentions (a longer sentence
+  merely containing "avança com o desenvolvimento"/"start building" as a
+  substring, e.g. discussing economic or scientific development) do not.
+  Engine-level wiring tests confirm a matching development-start phrase
+  forces `startProjectDevelopment` and skips `plan_query`/`select_tools`;
+  that an active intake session takes priority (handled by the main
+  gate, never reaching this check); and that a pending Obsidian retry
+  takes priority (a phrase matching both resolves via retry-save).

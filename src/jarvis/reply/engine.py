@@ -842,6 +842,7 @@ def run_reply_engine(db: "Database", cfg, tts: Optional[Any],
     if getattr(cfg, "project_intake_enabled", True):
         from ..tools.builtin.project_intake import (
             get_gated_session,
+            is_development_start_trigger_phrase,
             is_start_trigger_phrase,
             maybe_retry_obsidian_save,
         )
@@ -859,6 +860,20 @@ def run_reply_engine(db: "Database", cfg, tts: Optional[Any],
                 language=language,
             )
             return _deliver_intake_reply(_intake_result.reply_text)
+
+        def _force_start_development_call() -> str:
+            _dev_result = run_tool_with_retries(
+                db=db,
+                cfg=cfg,
+                tool_name="startProjectDevelopment",
+                tool_args={"input": redacted},
+                system_prompt="",
+                original_prompt=text,
+                redacted_text=redacted,
+                max_retries=1,
+                language=language,
+            )
+            return _deliver_intake_reply(_dev_result.reply_text)
 
         _intake_session = get_gated_session(db, cfg)
         if _intake_session is not None:
@@ -885,6 +900,17 @@ def run_reply_engine(db: "Database", cfg, tts: Optional[Any],
         if is_start_trigger_phrase(redacted):
             debug_log("project intake gate: start-trigger phrase matched, forcing projectIntake tool call", "tools")
             return _force_project_intake_call()
+
+        # None of the above — check for a deterministic "start
+        # development" trigger phrase so this never depends on the chat
+        # model reliably choosing to invoke startProjectDevelopment after
+        # the router selects it. Observed in voice testing: the small
+        # model narrated "Iniciando o desenvolvimento do projeto..."
+        # instead of actually calling the tool. See
+        # project_intake.spec.md "Starting development".
+        if is_development_start_trigger_phrase(redacted):
+            debug_log("project intake gate: development-start phrase matched, forcing startProjectDevelopment tool call", "tools")
+            return _force_start_development_call()
 
     # Step 2: Check for recent dialogue context
     recent_messages = []
