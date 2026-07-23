@@ -72,6 +72,40 @@ Each server entry in `config.mcps` is a dict consumed by
 |-----|------|---------|--------|
 | `idle_timeout_sec` | float \| null | null | If set, the worker self-terminates after that many seconds with an empty queue. Stateful servers (browser automation) must leave this unset. |
 
+## Obsidian auto-launch
+
+The `obsidian` MCP server bridges to the Obsidian Local REST API plugin,
+which only exists while Obsidian itself is running. Without it, session
+setup fails with an opaque `_WorkerDeadError`/`MCPServerSessionError`
+(surfaced further up as an "unhandled errors in a TaskGroup" style
+message), giving no indication that Obsidian simply isn't open.
+
+`ensure_obsidian_running(cfg)` runs once at daemon startup, immediately
+before MCP discovery, and is opt-in:
+
+| Config key | Type | Default | Effect |
+|---|---|---|---|
+| `obsidian_auto_launch` | bool | `false` | When `true`, check whether `127.0.0.1:27123` (the Local REST API's fixed port) is already accepting connections; if not, attempt to launch Obsidian. |
+| `obsidian_executable_path` | str \| null | `null` | Fallback launch path, used only if the `obsidian://open` protocol handler isn't registered. |
+
+Behaviour:
+- Disabled by default — changes user-visible startup behaviour (an extra
+  window opening), so it must be opted into rather than assumed safe for
+  every install.
+- The port check is a short-timeout (0.5s) TCP connect attempt, never a
+  blocking wait.
+- Launch is attempted via the `obsidian://open` protocol handler first
+  (works regardless of install location on Windows); `obsidian_executable_path`
+  is a fallback for the rare case that handler isn't registered.
+- After a launch attempt, startup pauses briefly (a few seconds) before
+  proceeding to MCP discovery, giving the Local REST API time to come up
+  — but this wait is bounded and does not stall the daemon indefinitely.
+- Fail-open throughout: any exception (port check, launch attempt) is
+  logged via `debug_log` and swallowed. A failure here never prevents the
+  daemon from starting; it just means the `obsidian` MCP server will fail
+  to connect as before, now with the auto-launch attempt logged for
+  diagnosis.
+
 ## Test contract
 
 Behavioural tests live in `tests/test_mcp_client.py`. The contract

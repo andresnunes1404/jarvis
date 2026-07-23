@@ -101,6 +101,8 @@ class MockConfig:
     project_intake_enabled: bool = True
     project_templates_path: str = ""
     project_intake_stale_minutes: int = 30
+    obsidian_auto_launch: bool = False
+    obsidian_executable_path: Optional[str] = None
 
     def __post_init__(self) -> None:
         # Mirror ``load_settings``: when the provider-aware fields are

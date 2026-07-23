@@ -272,6 +272,8 @@ class Settings:
 
     # MCP Integration
     mcps: Dict[str, Any]
+    obsidian_auto_launch: bool
+    obsidian_executable_path: str | None
 
     # Project Intake
     project_intake_enabled: bool
@@ -651,6 +653,12 @@ def get_default_config() -> Dict[str, Any]:
 
         # MCP Integration (external servers Jarvis can use). No defaults.
         "mcps": {},
+        # Opt-in: launch Obsidian at daemon startup if its Local REST API
+        # port isn't already listening, so the "obsidian" MCP server has
+        # something to connect to. Off by default since it changes
+        # user-visible startup behaviour (see mcp_runtime.spec.md).
+        "obsidian_auto_launch": False,
+        "obsidian_executable_path": None,
 
         # Project Intake (guided multi-turn project brief interviews)
         "project_intake_enabled": True,
@@ -879,6 +887,12 @@ def load_settings() -> Settings:
     raw_dict = merged.get("dictation_custom_dictionary", [])
     dictation_custom_dictionary = list(raw_dict) if isinstance(raw_dict, list) else []
     mcps = _ensure_dict(merged.get("mcps"))
+    obsidian_auto_launch = bool(merged.get("obsidian_auto_launch", False))
+    obsidian_executable_path_val = merged.get("obsidian_executable_path")
+    obsidian_executable_path = (
+        None if obsidian_executable_path_val in (None, "", "null")
+        else str(obsidian_executable_path_val)
+    )
     project_intake_enabled = bool(merged.get("project_intake_enabled", True))
     project_templates_path = str(
         merged.get("project_templates_path") or _default_project_templates_path()
@@ -1027,6 +1041,8 @@ def load_settings() -> Settings:
 
         # MCP Integration
         mcps=mcps,
+        obsidian_auto_launch=obsidian_auto_launch,
+        obsidian_executable_path=obsidian_executable_path,
 
         # Project Intake
         project_intake_enabled=project_intake_enabled,

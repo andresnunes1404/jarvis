@@ -383,6 +383,12 @@ def _build_field_metadata() -> List[FieldMeta]:
     f("project_intake_stale_minutes", "Project Intake Stale Timeout",
       "Minutes of inactivity before an abandoned intake session auto-expires",
       "features", "int", min_val=1, max_val=1440, step=5, suffix="min")
+    f("obsidian_auto_launch", "Auto-launch Obsidian",
+      "Launch Obsidian at startup if its Local REST API isn't already running (needed by the 'obsidian' MCP server)",
+      "features", "bool")
+    f("obsidian_executable_path", "Obsidian Executable Path",
+      "Fallback path to Obsidian.exe, used only if the obsidian:// protocol handler isn't registered",
+      "features", "str", nullable=True)
 
     # --- Advanced ---
     f("echo_energy_threshold", "Echo Energy Threshold",

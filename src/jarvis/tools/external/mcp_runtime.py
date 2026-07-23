@@ -35,6 +35,10 @@ from __future__ import annotations
 
 import asyncio
 import concurrent.futures
+import os
+import socket
+import subprocess
+import sys
 import threading
 import time
 from typing import Any, Dict, Optional
@@ -46,6 +50,69 @@ from .mcp_client import MCPClient
 _DEFAULT_INVOKE_TIMEOUT_SEC = 120.0
 _SETUP_TIMEOUT_SEC = 30.0
 _SHUTDOWN_THREAD_JOIN_SEC = 5.0
+
+# The Obsidian Local REST API plugin (what the "obsidian" MCP server bridges
+# to) only exists while Obsidian itself is running, on this fixed local port.
+_OBSIDIAN_REST_API_HOST = "127.0.0.1"
+_OBSIDIAN_REST_API_PORT = 27123
+_OBSIDIAN_PORT_CHECK_TIMEOUT_SEC = 0.5
+_OBSIDIAN_LAUNCH_WAIT_SEC = 3.0
+
+
+def _is_port_listening(host: str, port: int, timeout: float) -> bool:
+    try:
+        with socket.create_connection((host, port), timeout=timeout):
+            return True
+    except OSError:
+        return False
+
+
+def _launch_obsidian(executable_path: Optional[str]) -> bool:
+    """Best-effort launch. Tries the ``obsidian://open`` protocol handler
+    first (works regardless of install location); falls back to
+    ``executable_path`` if configured. Returns whether a launch attempt
+    was actually made (not whether Obsidian finished starting)."""
+    if sys.platform == "win32":
+        try:
+            os.startfile("obsidian://open")
+            return True
+        except OSError as e:
+            debug_log(f"obsidian://open protocol handler failed: {e}", "mcp")
+    if executable_path:
+        try:
+            subprocess.Popen([executable_path])
+            return True
+        except OSError as e:
+            debug_log(f"obsidian executable launch failed: {e}", "mcp")
+    return False
+
+
+def ensure_obsidian_running(cfg: Any) -> None:
+    """If ``cfg.obsidian_auto_launch`` is enabled, launch Obsidian when its
+    Local REST API port isn't already listening, so the "obsidian" MCP
+    server has something to connect to at daemon startup.
+
+    Opt-in and fail-open by design: disabled by default (see
+    ``obsidian_auto_launch`` in config.py), never raises, and never blocks
+    startup for more than ``_OBSIDIAN_LAUNCH_WAIT_SEC`` beyond the cheap
+    port check. See mcp_runtime.spec.md "Obsidian auto-launch".
+    """
+    if not getattr(cfg, "obsidian_auto_launch", False):
+        return
+    try:
+        if _is_port_listening(
+            _OBSIDIAN_REST_API_HOST, _OBSIDIAN_REST_API_PORT, _OBSIDIAN_PORT_CHECK_TIMEOUT_SEC
+        ):
+            debug_log("Obsidian Local REST API already listening, skipping auto-launch", "mcp")
+            return
+        debug_log("Obsidian Local REST API not listening; attempting auto-launch", "mcp")
+        launched = _launch_obsidian(getattr(cfg, "obsidian_executable_path", None))
+        if launched:
+            time.sleep(_OBSIDIAN_LAUNCH_WAIT_SEC)
+        else:
+            debug_log("Obsidian auto-launch attempt failed", "mcp")
+    except Exception as e:  # noqa: BLE001
+        debug_log(f"Obsidian auto-launch failed (fail-open): {e}", "mcp")
 
 
 _runtime_lock = threading.Lock()

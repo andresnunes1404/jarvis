@@ -317,6 +317,14 @@ def main() -> None:
     print(f"🧠 Using chat model: {cfg.llm_chat_model}", flush=True)
     print(f"🎤 Using whisper model: {cfg.whisper_model}", flush=True)
 
+    # Opt-in: launch Obsidian first if it isn't already running, so the
+    # "obsidian" MCP server (a Local REST API bridge) has something to
+    # connect to during discovery below. Fail-open, never blocks startup
+    # for more than a few seconds. See mcp_runtime.spec.md "Obsidian
+    # auto-launch".
+    from .tools.external.mcp_runtime import ensure_obsidian_running
+    ensure_obsidian_running(cfg)
+
     # MCP preflight: discover and cache external MCP tools
     mcps = getattr(cfg, "mcps", {}) or {}
     if mcps:
