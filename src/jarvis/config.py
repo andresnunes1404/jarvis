@@ -72,8 +72,47 @@ def _default_db_path() -> str:
     return str(base / "jarvis.db")
 
 
-def _default_project_templates_path() -> str:
-    return str(default_config_path().parent / "project_templates.json")
+def _default_project_templates_path(cfg_dir: Optional[Path] = None) -> str:
+    # Co-located with the config.json actually in use, not always the OS
+    # default config dir — callers that resolve a real cfg_dir (e.g.
+    # load_settings(), which honours JARVIS_CONFIG_PATH) must pass it so
+    # the two files stay next to each other.
+    base = cfg_dir if cfg_dir is not None else default_config_path().parent
+    return str(base / "project_templates.json")
+
+
+def _bundled_project_templates_source() -> Optional[Path]:
+    """Locate the app's shipped project_templates.json, independent of the
+    user's config dir: inside the PyInstaller bundle when frozen (same
+    ``sys._MEIPASS`` resolution used for bundled DLLs — see
+    ``src/jarvis/__init__.py``), else the repo root in a source checkout."""
+    if getattr(sys, "frozen", False):
+        meipass = getattr(sys, "_MEIPASS", None)
+        candidate = Path(meipass) / "project_templates.json" if meipass else None
+    else:
+        candidate = Path(__file__).resolve().parent.parent.parent / "project_templates.json"
+    return candidate if candidate and candidate.is_file() else None
+
+
+def _seed_default_project_templates(target: Path) -> None:
+    """First-run only: populate the default project_templates.json location
+    with the app's real template set so project intake doesn't silently
+    degrade to the minimal built-in fallback until a user manually copies
+    a file there. Never touches a path the user explicitly configured
+    (callers only invoke this for the resolved default), and never
+    overwrites a file that already exists. Fails open — a seeding failure
+    just leaves the tool's own runtime fallback in charge.
+    """
+    if target.exists():
+        return
+    source = _bundled_project_templates_source()
+    if source is None:
+        return
+    try:
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(source.read_text(encoding="utf-8"), encoding="utf-8")
+    except Exception:
+        pass
 
 
 @dataclass(frozen=True)
@@ -894,9 +933,16 @@ def load_settings() -> Settings:
         else str(obsidian_executable_path_val)
     )
     project_intake_enabled = bool(merged.get("project_intake_enabled", True))
-    project_templates_path = str(
-        merged.get("project_templates_path") or _default_project_templates_path()
-    )
+    # Check the raw loaded JSON, not the defaults-merged dict — the
+    # defaults themselves always carry a (OS-default-rooted) value for
+    # this key, so merged.get(...) is truthy even when the user never set
+    # it, which would defeat the co-location-with-cfg_dir logic below.
+    _project_templates_path_override = cfg_json.get("project_templates_path")
+    if _project_templates_path_override:
+        project_templates_path = str(_project_templates_path_override)
+    else:
+        project_templates_path = _default_project_templates_path(cfg_dir)
+        _seed_default_project_templates(Path(project_templates_path))
     project_intake_stale_minutes = int(merged.get("project_intake_stale_minutes", 30))
     whisper_min_confidence = float(merged.get("whisper_min_confidence", 0.4))
     whisper_no_speech_threshold = float(merged.get("whisper_no_speech_threshold", 0.5))

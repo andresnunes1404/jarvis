@@ -28,6 +28,7 @@ Plugins = PyQt6/Qt6/plugins
 # Manual collection can conflict with hooks and cause crashes
 datas = [
     (str(src_path / 'desktop_app' / 'desktop_assets' / '*.png'), 'desktop_app/desktop_assets'),
+    (str(project_root / 'project_templates.json'), '.'),
 ]
 
 # Collect Piper TTS data files (espeak-ng-data is required for phonemization)
