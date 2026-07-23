@@ -168,6 +168,31 @@ check fires — the tool remains in the catalogue and the router/planner
 can still select it for phrasing this list doesn't cover — but starting
 a session no longer *depends* on that path succeeding.
 
+**The tool is defensive against ungated invocation, not just the engine
+gate.** Normal LLM routing reaching `projectIntake` on its own (the
+fallback path in the previous paragraph) validates nothing — the router
+can select the tool for text that was never actually a start request at
+all. `ProjectIntakeTool.run()` therefore re-checks `is_start_trigger_phrase`
+itself before creating a session when none is active, rather than
+trusting any input text as grounds to start one. This was an observed
+voice-testing failure distinct from the ones above: the chat model
+selected `projectIntake` mid-conversation for a sentence that was *about*
+Jarvis/Antigravity architecture, not a request to start an intake, and
+the tool created a session from it anyway. From that point the
+deterministic gate correctly-by-design force-routed every subsequent
+turn — unrelated conversation, echoed speech, an abandon phrase that
+never reached the engine (classified as VAD echo) — into the interview
+as answers, producing a completed session with garbage content and a
+polluting Obsidian note. Reusing the exact same `is_start_trigger_phrase`
+function (not a duplicated list) means the engine gate's pre-validation
+and the tool's own defensive check can never drift out of sync: whether
+`ProjectIntakeTool.run()` is reached via the deterministic gate (already
+validated) or via normal LLM routing (validated nothing), the tool's own
+entry point is the single source of truth for "is this actually a
+legitimate start request." When the check fails, no session is created —
+the tool returns `success=False` with a neutral reply instead of silently
+starting an interview.
+
 ### Flow
 
 1. **No active session, trigger phrase recognised** → `run()` creates a
@@ -417,6 +442,48 @@ in the first place: a correct resolution (this section) means
 so the model never has a reason to reach past it for the raw Obsidian
 tools.
 
+**"Não encontrei nenhum plano guardado" despite an active plan
+existing.** A second voice-testing session hit this exact message from
+`startProjectDevelopment` even though a plan note existed in the vault
+at some point during the conversation. Investigating the underlying
+`project_intake_sessions` rows for that session showed the honest
+explanation rather than a code defect: the first intake attempt for the
+real project completed with `obsidian_saved=0` (the Obsidian write
+failed — Obsidian likely wasn't running yet), so at the moment the "no
+plan found" message was produced, no plan had *actually* been saved.
+The user's real project was only successfully saved on a later, redone
+intake pass (`obsidian_saved=1`). This is `_extract_note_paths` returning
+empty because the search genuinely found nothing yet — the same
+honest-failure behaviour as point 5 above — not the free-text
+`_extract_named_target` bug fixed previously (that bug produces "Não
+encontrei nenhum plano chamado 'X'", a different message, from a
+non-empty search result being over-filtered). Note this is **not**
+caused by vault pollution either: extra low-quality plan notes (see
+below) would, if anything, produce "Encontrei vários planos... Qual
+deles queres avançar?" (multiple matches), never zero — pollution and
+"no plan found" cannot be the same failure. If "não encontrei nenhum
+plano guardado" is ever seen again *after* confirming (a) Obsidian is
+running and (b) at least one `project_intake_sessions` row has
+`obsidian_saved=1`, that would point to a genuinely different problem —
+most likely whether `search_simple`'s literal query string `"type: plan
+status: active"` actually matches real note content the way assumed
+(this has never been verified against a live call, unlike the tool/
+response shapes documented above) — and would need its own live
+investigation before changing the query.
+
+**Vault pollution from false-triggered sessions.** Before the
+ungated-invocation defence above existed, a router-initiated
+`projectIntake` call on unrelated text could create a session, get
+force-fed garbage answers by the (correctly-behaving) gate, complete,
+and write a low-quality note to the vault — indistinguishable in
+frontmatter from a real plan (`status: active`, `type: plan`). These
+notes need manual review and removal; see the operator-facing cleanup
+guidance for identifying them (project/date-derived path, `other -
+<date>.md` naming, incoherent body content). This is a one-time cleanup
+of past damage, not something the code can safely auto-detect and
+delete — a legitimate short or unusual-sounding real brief must never be
+silently discarded.
+
 ### Restarting mid-interview
 
 If the user says the same start-a-new-project trigger phrasing again while
@@ -556,3 +623,10 @@ abandon turn   → "Ok, cancelei o intake do projeto. Diz 'vamos começar um nov
   that an active intake session takes priority (handled by the main
   gate, never reaching this check); and that a pending Obsidian retry
   takes priority (a phrase matching both resolves via retry-save).
+- Ungated-invocation defence tests: `ProjectIntakeTool.run()` called
+  directly with no active session and clearly unrelated text (simulating
+  a router-initiated call that bypassed the engine gate entirely) does
+  not create a session and returns a neutral `success=False` reply;
+  called with a real start-trigger phrase under the same conditions still
+  creates a session normally (regression check that legitimate direct-exec
+  calls aren't broken).

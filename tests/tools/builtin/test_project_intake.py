@@ -131,6 +131,59 @@ class TestFullFlow:
         assert get_gated_session(db) is None
 
 
+class TestDefensiveAgainstUngatedInvocation:
+    """ProjectIntakeTool can be reached two ways: the deterministic engine
+    gate (which already validated the phrase before forcing the call), or
+    normal LLM tool routing selecting projectIntake on its own (which
+    validates nothing). The tool itself must be the single source of
+    truth for "is this actually a legitimate start request" — trusting any
+    input text as grounds to start a session let an unrelated
+    router-initiated call create one from arbitrary conversation, after
+    which the gate correctly-by-design force-routed every subsequent turn
+    into the interview. See project_intake.spec.md "Trigger detection"."""
+
+    def test_unrelated_text_does_not_create_session(self, db, mock_config):
+        tool = ProjectIntakeTool()
+        assert get_gated_session(db) is None
+
+        result = tool.run(
+            {"input": "o Jarvis usa um sistema de agentes chamado Antigravity para gerir tarefas"},
+            _make_context(db, mock_config),
+        )
+
+        assert result.success is False
+        assert "não parece" in result.reply_text.lower()
+        assert get_gated_session(db) is None  # no session was created
+
+    def test_another_unrelated_sentence_does_not_create_session(self, db, mock_config):
+        tool = ProjectIntakeTool()
+
+        result = tool.run(
+            {"input": "que horas são em Lisboa agora?"},
+            _make_context(db, mock_config),
+        )
+
+        assert result.success is False
+        assert get_gated_session(db) is None
+
+    def test_real_trigger_phrase_still_creates_session_when_called_directly(
+        self, db, mock_config
+    ):
+        """Regression check: a legitimate direct-exec / router-initiated
+        call with real trigger phrasing (not routed through the engine
+        gate at all — simulating the router selecting projectIntake on
+        its own) must still work normally."""
+        tool = ProjectIntakeTool()
+
+        result = tool.run(
+            {"input": "let's start a new project"}, _make_context(db, mock_config)
+        )
+
+        assert result.success is True
+        assert "tipo de projeto" in result.reply_text.lower()
+        assert get_gated_session(db) is not None
+
+
 class TestAbandon:
     def test_abandon_phrase_stops_gate_from_firing_next_turn(self, db, mock_config):
         tool = ProjectIntakeTool()
@@ -146,7 +199,7 @@ class TestAbandon:
 
     def test_abandon_mid_interview_preserves_partial_answers(self, db, mock_config):
         tool = ProjectIntakeTool()
-        tool.run({"input": "site novo"}, _make_context(db, mock_config))
+        tool.run({"input": "vamos começar um novo projeto"}, _make_context(db, mock_config))
         tool.run({"input": "site institucional"}, _make_context(db, mock_config))  # resolves type, asks Q1
         session_before = db.get_active_intake_session()
         assert session_before["status"] == "in_progress"

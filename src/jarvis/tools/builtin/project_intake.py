@@ -490,6 +490,31 @@ class ProjectIntakeTool(Tool):
         session = get_gated_session(context.db, context.cfg)
 
         if session is None:
+            # This branch is reachable two ways: the deterministic engine
+            # gate forcing a call (which already validated the phrase
+            # before forcing it), or normal LLM tool routing selecting
+            # projectIntake on its own (which validates nothing). Trusting
+            # any input text as grounds to start a session let an
+            # unrelated router-initiated call create one from arbitrary
+            # conversation, after which the gate correctly-by-design
+            # force-routed every subsequent turn into the interview. So
+            # this is the single source of truth for "is this actually a
+            # legitimate start request" — reusing the exact same check the
+            # engine gate uses (not a duplicate list) so the two can never
+            # drift apart. See project_intake.spec.md "Trigger detection".
+            if not is_start_trigger_phrase(text):
+                debug_log(
+                    "projectIntake: no active session and input doesn't match a "
+                    "start-trigger phrase — refusing to start a session (likely a "
+                    "router-initiated call on unrelated text)", "tools",
+                )
+                return ToolExecutionResult(
+                    success=False,
+                    reply_text=(
+                        "Isto não parece um pedido para começar um novo projeto — "
+                        "não vou iniciar uma entrevista de intake."
+                    ),
+                )
             try:
                 context.db.insert_intake_session()
             except Exception as e:
