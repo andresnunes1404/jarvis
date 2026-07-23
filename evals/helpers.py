@@ -242,6 +242,17 @@ def create_mock_tool_run(
 @dataclass
 class MockConfig:
     """Minimal config object for eval tests."""
+    # Provider-aware fields — see tests/conftest.py's MockConfig, which this
+    # mirrors. Left empty so __post_init__ promotes the ``ollama_*`` aliases,
+    # matching what ``load_settings()`` produces for a real Ollama-only setup.
+    llm_provider: str = "ollama"
+    llm_base_url: str = ""
+    llm_api_key: str = ""
+    llm_chat_model: str = ""
+    embedding_provider: str = ""
+    embedding_base_url: str = ""
+    embedding_api_key: str = ""
+    embedding_model: str = ""
     ollama_base_url: str = "http://localhost:11434"
     ollama_chat_model: str = "gemma4:e2b"
     ollama_embed_model: str = "nomic-embed-text"
@@ -283,6 +294,17 @@ class MockConfig:
     use_stdin: bool = True
     project_intake_enabled: bool = True
     project_templates_path: str = ""
+    project_intake_stale_minutes: int = 30
+
+    def __post_init__(self) -> None:
+        # Mirror ``load_settings()``: when the provider-aware fields are
+        # left empty, promote the legacy ``ollama_*`` aliases.
+        if not self.llm_chat_model:
+            self.llm_chat_model = self.ollama_chat_model
+        if not self.llm_base_url:
+            self.llm_base_url = self.ollama_base_url
+        if not self.embedding_model:
+            self.embedding_model = self.ollama_embed_model
 
 
 @dataclass

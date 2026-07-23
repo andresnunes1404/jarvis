@@ -558,7 +558,17 @@ abandon turn   → "Ok, cancelei o intake do projeto. Diz 'vamos começar um nov
 ### Config keys
 
 - `project_templates_path` — path to `project_templates.json`, default
-  co-located with `config.json`.
+  co-located with the `config.json` actually in use (the directory
+  `load_settings()` resolves `cfg_path` into, honouring
+  `JARVIS_CONFIG_PATH` — not always the OS default config dir). When left
+  at this default and no file exists there yet, `load_settings()` seeds it
+  on first run from the app's shipped `project_templates.json` (repo root
+  in a source checkout, bundled alongside the frozen executable via
+  `sys._MEIPASS` in a packaged build), so the real per-category templates
+  are available immediately rather than degrading to the tool's minimal
+  built-in fallback until a user manually places a file. Seeding never
+  overwrites an existing file and never touches an explicitly-configured
+  custom path.
 - `project_intake_enabled` — default `true`; when `false`, the gate
   never fires and the tool is excluded from the catalogue entirely.
 - `project_intake_stale_minutes` — default `30`; how long an intake
